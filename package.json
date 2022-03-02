@@ -1,0 +1,11 @@
+{
+  "name": "upload_svr",
+  "version": "1.0.0",
+  "description": "A Node.js server for plain HTML file upload and Plupload.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "alex",
+  "license": "ISC"
+}
