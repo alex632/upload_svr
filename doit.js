@@ -73,10 +73,10 @@ function serveStaticFile(req, pathnm, res) {
 //   /?q=--dumpcache
 //
 //const server = 
-http.createServer(function (req, res) {
+http.createServer(async function (req, res) {
     console.log(`${req.method} ${req.url}`);
     if ( req.method === "POST" ) {
-        handlePost(req, res);
+        await handlePost(req, res);
     } else {
         let uri = url.parse(req.url, false);
         //console.log(req.headers);
@@ -92,72 +92,6 @@ http.createServer(function (req, res) {
 
 //import {Buffer} from 'buffer';
 //import { Buffer } from 'buffer';
-
-function handleMtpfd0(bf, bdr/*, req, res*/) {
-    let x1 = 0;
-    let x2 = 0;
-    function get1Line() {
-        x2 = bf.indexOf('\r\n', x1);
-        if (x2===-1) throw 'shit';
-        let line = bf.slice(x1, x2);
-        x1 = x2+2;
-        return line;
-    }
-    //x2 = bf.indexOf('\r\n');
-    //if (x2===-1) return -1;
-    //let line = bf.slice(x1, x2);
-    let line = get1Line();
-    console.log(`line 1 ${line}`);
-    if ( line.toString() !== `--${bdr}` ) return -2;
-    //x1 = x2+2;
-    //x2 = bf.indexOf('\r\n', x1);
-    //line = bf.slice(x1, x2);
-    line = get1Line();
-    console.log(`line 2 ${line}`);
-    if ( line.compare(Buffer.from('Content-Disposition: form-data; name="name"')) !== 0 ) return -3;
-    x1 = x2+2;
-    x2 = bf.indexOf('\r\n', x1);
-    line = bf.slice(x1, x2);
-    console.log(`line 3 ${line}`);
-    if ( line.compare(Buffer.from('')) !== 0 ) return -4;
-    x1 = x2+2;
-    x2 = bf.indexOf('\r\n', x1);
-    line = bf.slice(x1, x2);
-    let fn = line.toString();
-    console.log(`line 4 filename: '${line}'`);
-    x1 = x2+2;
-    x2 = bf.indexOf('\r\n', x1);
-    line = bf.slice(x1, x2);
-    console.log(`line 5: ${line}`);
-    if ( line.indexOf(bdr) !== 2 ) return -5;
-    x1 = x2+2;
-    x2 = bf.indexOf('\r\n', x1);
-    line = bf.slice(x1, x2);
-    console.log(`line 6: ${line}`);
-    // Content-Disposition: form-data; name="chunk"
-    if ( line.compare(Buffer.from(`Content-Disposition: form-data; name="file"; filename="${fn}"`)) !== 0 ) return -6;
-    x1 = x2+2;
-    x2 = bf.indexOf('\r\n', x1);
-    line = bf.slice(x1, x2);
-    console.log(`line 7: ${line}`);
-    const rex = new RegExp('Content-Type: (.*)');
-    const m = rex.exec(line.toString());
-    if (!m) return -7;
-    let ct = m[1];
-    x1 = x2+2;
-    x2 = bf.indexOf('\r\n', x1);
-    line = bf.slice(x1, x2);
-    console.log(`line 8 ${line}`);
-    if ( line.compare(Buffer.from('')) !== 0 ) return -8;
-    x1 = x2+2;  // data begin
-    const eof = Buffer.from(`\r\n--${bdr}--\r\n`);
-    x2 = bf.indexOf(eof, x1);
-    if ( x2 === -1 ) return -9;
-    const flen = x2 - x1;
-    console.log(`The post file ${fn} type ${ct} size ${flen}`);
-    return 0;
-
-}
 
 function decodeHtmlEntities(encodedString) {
     var translate_re = /&(nbsp|amp|quot|lt|gt);/g;
@@ -176,8 +110,19 @@ function decodeHtmlEntities(encodedString) {
     });
 }
 
-function handleMtpfd(bf, bdr/*, req, res*/) {
-    let b = { file:[] };
+function idle(ms) {
+    return new Promise(resolve => setTimeout(() => resolve(), ms));
+}
+  
+/**
+ * Handle multipart/form-data POST request
+ * @param {*} bf POST body as Buffer
+ * @param {*} bdr boundary
+ * @returns object
+ * @throws error message as string
+ */
+async function handleMtpfd(bf, bdr) {
+    let b = { files:[] };
     let x1 = 0, x2 = 0;
     function get1Line() {
         x2 = bf.indexOf('\r\n', x1);
@@ -208,9 +153,9 @@ function handleMtpfd(bf, bdr/*, req, res*/) {
                 x2 = bf.indexOf(eof, x1);
                 if (x2===-1) throw 'end of file not found';
                 let fn = decodeHtmlEntities(mf[2]);
-                b.file.push({name: mf[1], fn: fn, mime: mt[1], start: x1, end: x2});
-                let fo = fs.createWriteStream(`./upload/${fn}`);
-                fo.end(bf.slice(x1, x2));
+                b.files.push({name: mf[1], fn: fn, mime: mt[1], start: x1, end: x2});
+                //let fo = fs.createWriteStream(`./upload/${fn}`);
+                //fo.end(bf.slice(x1, x2));
                 // TODO: chunk chunks by Plupload.
                 x1 = x2 + 2;
             } else {
@@ -223,35 +168,59 @@ function handleMtpfd(bf, bdr/*, req, res*/) {
             }
         }
     }
+    if ( b.files.length ) {
+        if ( b.chunks ) {   // chunks by Plupload
+            if ( b.files.length !== 1 ) throw "WTF! damn Plupload";
+            const f = b.files[0];
+            if ( b.chunk == 0 ) {
+                let fo = fs.createWriteStream(`./upload/${f.fn}`);
+                fo.end(bf.slice(f.start, f.end), ()=>{
+                    //resolve();
+                });
+                await idle(1000);
+            } else {
+                fs.appendFileSync(`./upload/${f.fn}`, bf.slice(f.start, f.end));
+                await idle(1000);
+            }
+        } else {    // Ordinary HTML post file
+            b.files.forEach (f => {
+                console.log(`Save ${f.fn} ${f.end-f.start} bytes`);
+                let fo = fs.createWriteStream(`./upload/${f.fn}`);
+                fo.end(bf.slice(f.start, f.end));
+            });
+            await idle(1000);
+        }
+    }
     return b;
 }
 
-function handlePost(req, res) {  // req: http.IncomingMessage, res: http.ServerResponse
-    //console.log("POST me");
-    //console.log(req.headers);
+async function handlePost(req, res) {  // req: http.IncomingMessage, res: http.ServerResponse
     let chunks = [];
     req.on('data', (chunk) => {
         chunks.push(chunk);
-        //console.log(`Received ${chunk.length} bytes of data.`);
+        console.log(`Received ${chunk.length} bytes of data.`);
     });
-    req.on('end', ()=>{
+    req.on('end', async ()=>{
         let buff = Buffer.concat(chunks);
-        //console.log(buff.toString());
+        let stCode = 200;
+        let msg = `Got ${buff.length} bytes`;
         const ct = req.headers['content-type'];
-        let bdr = '';
         if (ct) {
             const rex = new RegExp('multipart/form-data; boundary=(.*)');
             const m = rex.exec(ct);
             if (m) {
-                bdr = m[1];
-                console.log(bdr);
-                const rv = handleMtpfd(buff, bdr);
-                console.log(rv);
+                let bdr = m[1];
+                try {
+                    const rv = await handleMtpfd(buff, bdr);
+                    console.log(rv);
+                } catch (e) {
+                    console.log(e);
+                    stCode = 400;   // Bad Request
+                    msg = e;
+                }
             }
         }
-        let msg = `You have written ${buff.length} bytes`;
-        //msg = '{"jsonrpc" : "2.0", "result" : null, "id" : "id"}';
-        res.writeHead(200, {'Content-Type': 'text/html', 'Content-Length': msg.length});
+        res.writeHead(stCode, {'Content-Type': 'text/html', 'Content-Length': msg.length});
         res.end(msg);
     });
 }
