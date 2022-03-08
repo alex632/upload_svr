@@ -4,10 +4,9 @@ const http = require('http');
 //import http from 'http';
 const url = require('url');
 //import url from 'url';
-//const querystring = require('querystring');
 const fs = require('fs');
-//import path from 'path';
 const path = require('path');
+//import path from 'path';
 
 function getDateTime() {
 	return new Date().toLocaleString('en-US');
@@ -28,7 +27,6 @@ const mimeTypes = {
 
 function serveStaticFile(req, pathnm, res) {
 	let actp = path.join("root", pathnm);
-	//console.log("serveStaticFile", pathnm)
 	fs.stat(actp, (error, stats)=>{
 		if (error) {
 			let msg;
@@ -66,20 +64,12 @@ function serveStaticFile(req, pathnm, res) {
 	});
 }
 
-//
-// URL format:
-//   /dir/filename.ext
-//   /?q=john+doe
-//   /?q=--dumpcache
-//
-//const server = 
 http.createServer(async function (req, res) {
-    console.log(`${req.method} ${req.url}`);
+    //console.log(`${req.method} ${req.url}`);
     if ( req.method === "POST" ) {
-        await handlePost(req, res);
+        handlePost(req, res);
     } else {
         let uri = url.parse(req.url, false);
-        //console.log(req.headers);
         if (uri.pathname !== "/") {
             serveStaticFile(req, uri.pathname, res);
         } else {
@@ -91,7 +81,6 @@ http.createServer(async function (req, res) {
 });
 
 //import {Buffer} from 'buffer';
-//import { Buffer } from 'buffer';
 
 function decodeHtmlEntities(encodedString) {
     var translate_re = /&(nbsp|amp|quot|lt|gt);/g;
@@ -110,10 +99,53 @@ function decodeHtmlEntities(encodedString) {
     });
 }
 
-function idle(ms) {
-    return new Promise(resolve => setTimeout(() => resolve(), ms));
+var pending = {};
+
+function saveFiles(bf, b) {
+    if ( b.chunks && b.chunk ) {   // chunked transmission by Plupload
+        if ( b.files.length !== 1 ) throw "Damn Plupload. Post multiple files with chunks not reasonable.";
+        const f = b.files[0];
+        const chunk = parseInt(b.chunk);
+        const chunks = parseInt(b.chunks);
+        if ( chunk === 0 ) {
+            let otpFn;
+            if ( chunks === 1 ) {
+                otpFn = `./upload/${b.name}`;
+            } else {
+                otpFn = `./upload/${b.name}.pd!`;
+            }
+            let fo = fs.createWriteStream(otpFn);
+            fo.write(bf.slice(f.start, f.end));
+            if ( chunks === 1 ) {
+                fo.end();
+            } else {
+                pending[f.fn] = {fo: fo, chunk: chunk, chunks: chunks, tmpFn: otpFn, fn: `./upload/${b.name}`};
+            }
+        } else {
+            let pf = pending[f.fn];
+            if ( !pf ) throw "weird 1";
+            if ( chunks !== pf.chunks ) throw "weird 2";
+            if ( chunk !== pf.chunk+1 ) throw "Wrong sequence";
+            pf.fo.write(bf.slice(f.start, f.end));
+            if ( chunk === chunks-1 ) {
+                pf.fo.end(()=>{
+                    console.log(`rename ${pf.tmpFn} to ${pf.fn}`);
+                    fs.rename(pf.tmpFn, pf.fn, ()=>{});
+                    delete pending[f.fn];
+                });
+            } else {
+                pf.chunk = chunk;
+            }
+        }
+    } else {    // Ordinary HTML post file
+        b.files.forEach (f => {
+            console.log(`Save ${f.fn} ${f.end-f.start} bytes`);
+            let fo = fs.createWriteStream(`./upload/${f.fn}`);
+            fo.end(bf.slice(f.start, f.end));
+        });
+    }
 }
-  
+
 /**
  * Handle multipart/form-data POST request
  * @param {*} bf POST body as Buffer
@@ -154,9 +186,6 @@ async function handleMtpfd(bf, bdr) {
                 if (x2===-1) throw 'end of file not found';
                 let fn = decodeHtmlEntities(mf[2]);
                 b.files.push({name: mf[1], fn: fn, mime: mt[1], start: x1, end: x2});
-                //let fo = fs.createWriteStream(`./upload/${fn}`);
-                //fo.end(bf.slice(x1, x2));
-                // TODO: chunk chunks by Plupload.
                 x1 = x2 + 2;
             } else {
                 const mh = /Content-Disposition: form-data; name="(.*?)"/.exec(line);
@@ -168,37 +197,14 @@ async function handleMtpfd(bf, bdr) {
             }
         }
     }
-    if ( b.files.length ) {
-        if ( b.chunks ) {   // chunks by Plupload
-            if ( b.files.length !== 1 ) throw "WTF! damn Plupload";
-            const f = b.files[0];
-            if ( b.chunk == 0 ) {
-                let fo = fs.createWriteStream(`./upload/${f.fn}`);
-                fo.end(bf.slice(f.start, f.end), ()=>{
-                    //resolve();
-                });
-                await idle(1000);
-            } else {
-                fs.appendFileSync(`./upload/${f.fn}`, bf.slice(f.start, f.end));
-                await idle(1000);
-            }
-        } else {    // Ordinary HTML post file
-            b.files.forEach (f => {
-                console.log(`Save ${f.fn} ${f.end-f.start} bytes`);
-                let fo = fs.createWriteStream(`./upload/${f.fn}`);
-                fo.end(bf.slice(f.start, f.end));
-            });
-            await idle(1000);
-        }
-    }
+    if ( b.files.length ) saveFiles(bf, b);
     return b;
 }
 
-async function handlePost(req, res) {  // req: http.IncomingMessage, res: http.ServerResponse
+function handlePost(req, res) {  // req: http.IncomingMessage, res: http.ServerResponse
     let chunks = [];
     req.on('data', (chunk) => {
         chunks.push(chunk);
-        console.log(`Received ${chunk.length} bytes of data.`);
     });
     req.on('end', async ()=>{
         let buff = Buffer.concat(chunks);
